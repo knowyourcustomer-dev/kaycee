@@ -11,7 +11,7 @@ Fetch the API's machine-readable guide and build against it rather than guessing
 - Full self-contained guide: https://knowyourcustomer.com/developers/llms-full.txt
 - Link map: https://knowyourcustomer.com/developers/llms.txt
 
-It covers auth, the case model, the "readiness = structure populated, not the status field" seam, beneficial ownership, documents, AML, IDV, the error model, and per-jurisdiction latency. WebFetch it once and keep it in context; it is written for agents and avoids the token cost of scraping the HTML docs.
+It covers auth, the case model, the "readiness = structure populated, not the status field" seam, beneficial ownership, documents, AML, IDV, the error model, and per-jurisdiction latency. Fetch it once and keep it in context (in Claude Code, use WebFetch); it is written for agents and avoids the token cost of scraping the HTML docs.
 
 ## Quick facts
 
