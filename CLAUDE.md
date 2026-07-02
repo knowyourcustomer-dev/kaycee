@@ -15,7 +15,7 @@ It covers auth, the case model, the "readiness = structure populated, not the st
 
 ## Quick facts
 
-- **Run:** `npm install && npm run dev` (http://localhost:3000). Defaults hit the free sandbox `https://api.knowyourcustomer.dev` and auto-provision a demo tenant, so no credentials are needed to try the journey.
+- **Run:** `npm install && npm run dev` (http://localhost:3000). By default, it uses the free sandbox `https://api.knowyourcustomer.dev` and auto-provisions a demo tenant, so no credentials are needed to try the journey.
 - **API surface:** all of it is in `src/server/kyc-client.ts`. Keep new calls there.
 - **Secrets:** the browser talks to the BFF (`src/server/bff.ts`); the server holds the token. Never log, echo, or commit `client_secret` or bearer tokens. `.env.example` shows the `SANDBOX_*` keys.
 - **Verify changes:** `npm test`, then `npm run build`. Exercise the flow in the browser against the sandbox before proposing it is done.
