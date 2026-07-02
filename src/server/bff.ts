@@ -10,7 +10,7 @@
 import "server-only";
 import { NextResponse } from "next/server";
 import { KycApiError } from "./kyc-client";
-import { resetSession, NotConnectedError } from "./auth";
+import { NotConnectedError } from "./auth";
 
 /** Wrap a handler so KYC API errors become structured JSON, not stack traces. */
 export async function handle<T>(fn: () => Promise<T>): Promise<NextResponse> {
@@ -18,8 +18,8 @@ export async function handle<T>(fn: () => Promise<T>): Promise<NextResponse> {
     const data = await fn();
     return NextResponse.json(data);
   } catch (err) {
-    // BYO/static: the tester's (or configured) credentials are invalid/expired.
-    // Surface 401 so the UI re-prompts — do NOT fall back to a throwaway tenant.
+    // No usable credentials (or they expired): surface 401 so the UI shows the
+    // connect screen — there is NO auto-provisioned fallback tenant.
     if (err instanceof NotConnectedError) {
       return NextResponse.json(
         { error: "not_connected", detail: err.message },
@@ -27,10 +27,6 @@ export async function handle<T>(fn: () => Promise<T>): Promise<NextResponse> {
       );
     }
     if (err instanceof KycApiError) {
-      // A 410 on the DEMO path means the ephemeral sandbox expired; reset so the
-      // next call auto-provisions a fresh one. (No-op for BYO — it has no module
-      // cache and handleExpiredSandbox() already refused to provision.)
-      if (err.status === 410) resetSession();
       return NextResponse.json(
         { error: "KYC API error", status: err.status, detail: err.body },
         { status: err.status },

@@ -5,7 +5,8 @@
 //          HttpOnly session cookie, and return { connected, clientId }. The
 //          clientSecret is consumed server-side and never echoed back.
 //   DELETE /api/session/credentials
-//          Clear the BYO cookie — the app falls back to static/demo mode.
+//          Clear the BYO cookie — the app falls back to static env creds when
+//          configured, otherwise to the disconnected connect gate.
 //
 // The cookie is the ONLY session state (no server store), so any replica can
 // serve the next request. The secret lives only inside the encrypted cookie
@@ -64,7 +65,7 @@ export async function POST(req: Request) {
 
 export async function DELETE() {
   const res = NextResponse.json({ connected: false });
-  // Expire the cookie. Next /api/session then reports static/demo mode again.
+  // Expire the cookie. Next /api/session then reports static or disconnected.
   res.cookies.set(SESSION_COOKIE, "", {
     httpOnly: true,
     sameSite: "lax",

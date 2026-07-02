@@ -11,9 +11,20 @@
  *                        API host (e.g. a second instance pointed at the live
  *                        env, where auth is on a separate host).
  *   SANDBOX_CLIENT_ID / SANDBOX_CLIENT_SECRET — optional long-lived credentials.
- *                        When BOTH are set we run in STATIC-creds mode (no
- *                        provisioning). When absent we run in SANDBOX mode and
- *                        auto-(re)provision an ephemeral tenant.
+ *                        When BOTH are set we run in STATIC-creds mode: the
+ *                        deployment owner has supplied their own tenant
+ *                        credentials and every visitor shares that tenant.
+ *                        When absent, each visitor must CONNECT with their own
+ *                        sandbox credentials (BYO) before the journey unlocks.
+ *                        There is NO auto-provisioning path: credentials are
+ *                        issued via the developer-portal access request
+ *                        (https://knowyourcustomer.com/developers/access/).
+ *   APP_PUBLIC_URL     — OPTIONAL. This app's own public origin (e.g.
+ *                        https://kaycee.knowyourcustomer.dev). When set, the app
+ *                        consumes case events via sandbox WEBHOOKS delivered to
+ *                        `${APP_PUBLIC_URL}/api/webhooks/callback`. When unset
+ *                        (e.g. a local clone the sandbox cannot reach), the app
+ *                        falls back to polling case status. See webhooks.ts.
  *
  * Going to PRODUCTION is a config change, not a code change: point
  * SANDBOX_BASE_URL (and, if needed, SANDBOX_TOKEN_URL) at the live KYC API and
@@ -31,8 +42,12 @@ const baseUrl = (process.env.SANDBOX_BASE_URL || "https://api.knowyourcustomer.d
 const clientId = process.env.SANDBOX_CLIENT_ID || null;
 const clientSecret = process.env.SANDBOX_CLIENT_SECRET || null;
 
-/** Run mode. "static" = fixed creds, no provisioning. "sandbox" = auto-provision. */
-export type AuthMode = "static" | "sandbox";
+/**
+ * Env-level run mode. "static" = the deployment supplies fixed creds via env;
+ * "disconnected" = no env creds, so each visitor must connect their own (BYO).
+ * (BYO itself is per-request session state, not an env mode — see auth.ts.)
+ */
+export type AuthMode = "static" | "disconnected";
 
 export const config = {
   /** Base URL of the KYC API. */
@@ -52,12 +67,24 @@ export const config = {
   scope: process.env.SANDBOX_SCOPE || "PublicApi",
 
   /**
-   * Auth mode: "static" when both creds are configured (no provisioning;
-   * e.g. the live-env instance), otherwise "sandbox" (auto-(re)provision).
+   * Env-level auth mode: "static" when both creds are configured (e.g. the
+   * live-env instance), otherwise "disconnected" — visitors must paste their
+   * own sandbox credentials before the journey unlocks. NO auto-provisioning.
    */
-  mode: (clientId && clientSecret ? "static" : "sandbox") as AuthMode,
+  mode: (clientId && clientSecret ? "static" : "disconnected") as AuthMode,
+
+  /**
+   * This app's own public origin, when reachable by the sandbox. Set => case
+   * events arrive as webhooks; unset => the journey polls (see webhooks.ts).
+   */
+  appPublicUrl: (process.env.APP_PUBLIC_URL || "").replace(/\/$/, "") || null,
 };
 
 export function hasStaticCredentials(): boolean {
   return config.mode === "static";
+}
+
+/** True when APP_PUBLIC_URL is set and case events should arrive as webhooks. */
+export function webhookModeEnabled(): boolean {
+  return config.appPublicUrl !== null;
 }

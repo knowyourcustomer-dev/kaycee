@@ -10,18 +10,40 @@
  * `member.caseCommonId`. We never trust the org-chart name to address the
  * individual case.
  *
+ * INDIVIDUALS ONLY: photo-ID rows are for natural persons. A members tree also
+ * carries CORPORATE members (a company shareholder — `entityName`, memberType
+ * "Company") which may themselves carry a caseCommonId; those must NEVER get an
+ * ID-upload row (a company has no passport — its corporate documents, like the
+ * board resolution, live on the root company case). This is the "Member 6053"
+ * bug: a corporate member (THE GREAT APOLLO LIMITED) slipped through on its
+ * caseCommonId alone and was shown as a fake person. We filter on
+ * `memberType === "Individual"` (the live/golden shape; the synthetic shape
+ * uses 2) and, when memberType is absent, fall back to the record shape
+ * (firstName vs entityName) plus the entity-name heuristic shared with ubo.ts.
+ *
  * The members response groups people under several arrays; each entry has a
  * `member` object that, on the live contract, carries `caseCommonId` (the
  * person's own individual case). We flatten all groups and index by that id.
  */
 
+// Explicit .ts extension so the pure lib modules are directly importable by
+// the node --test suites (Node's native type stripping needs real specifiers);
+// Next's bundler resolution accepts it (allowImportingTsExtensions).
+import { looksLikeEntityName } from "./ubo.ts";
+
 export interface MemberEntry {
   role?: string | null;
   caseStepId?: number;
+  /** "Individual" | "Company" on the live/golden shape; 2 | 1 on the synthetic shape. */
+  memberType?: string | number | null;
   member?: {
     rawName?: string;
     firstName?: string;
     lastName?: string;
+    /** Present on linked-party member records instead of rawName. */
+    name?: string;
+    /** Present on CORPORATE members (which never get an ID-upload row). */
+    entityName?: string;
     caseCommonId?: number | null;
   };
 }
@@ -47,21 +69,62 @@ const GROUPS: (keyof MembersResponse)[] = [
 ];
 
 /**
+ * Is this members-tree entry a NATURAL PERSON?
+ *   1. Explicit memberType wins: "Individual"/2 yes; anything else declared
+ *      ("Company"/1/"JointShareholder"/...) no.
+ *   2. No memberType: an `entityName` marks a company; a `firstName` marks a
+ *      person; otherwise fall back to the shared entity-name heuristic on the
+ *      display name (same rule ubo.ts applies to org-chart nodes).
+ */
+export function isIndividualEntry(entry: MemberEntry): boolean {
+  const mt = entry.memberType;
+  if (mt !== undefined && mt !== null && mt !== "") {
+    return mt === "Individual" || mt === 2;
+  }
+  const m = entry.member || {};
+  if (m.entityName) return false;
+  if (m.firstName) return true;
+  const displayName = m.rawName || m.name || "";
+  return displayName !== "" && !looksLikeEntityName(displayName);
+}
+
+/** Best display name for a member record; empty string when none exists. */
+function memberName(entry: MemberEntry): string {
+  const m = entry.member || {};
+  return (
+    m.rawName ||
+    `${m.firstName ?? ""} ${m.lastName ?? ""}`.trim() ||
+    m.name ||
+    ""
+  );
+}
+
+/**
  * Flatten the members response into a deduplicated list of INDIVIDUAL member
- * cases — only those that carry a real `caseCommonId` (i.e. an addressable
- * individual case). Returns at most one entry per caseCommonId.
+ * cases — natural persons only (see isIndividualEntry) that carry a real
+ * `caseCommonId` (i.e. an addressable individual case). Corporate members are
+ * excluded regardless of caseCommonId. An individual with NO resolvable name is
+ * skipped with a console warning — we never show a synthetic "Member NNNN"
+ * placeholder as if it were a person. Returns at most one entry per
+ * caseCommonId.
  */
 export function individualMemberCases(members: MembersResponse | null | undefined): IndividualMember[] {
   if (!members) return [];
   const byId = new Map<number, IndividualMember>();
   for (const g of GROUPS) {
     for (const entry of members[g] || []) {
-      const m = entry.member;
-      const ccid = m?.caseCommonId;
-      if (typeof ccid === "number" && ccid > 0) {
-        const name = m?.rawName || `${m?.firstName ?? ""} ${m?.lastName ?? ""}`.trim();
-        if (!byId.has(ccid)) byId.set(ccid, { name: name || `Member ${ccid}`, caseCommonId: ccid });
+      if (!isIndividualEntry(entry)) continue; // corporate members: no ID row, ever
+      const ccid = entry.member?.caseCommonId;
+      if (typeof ccid !== "number" || ccid <= 0) continue;
+      const name = memberName(entry);
+      if (!name) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[member-resolve] individual member case ${ccid} has no resolvable name — skipping (won't invent one)`,
+        );
+        continue;
       }
+      if (!byId.has(ccid)) byId.set(ccid, { name, caseCommonId: ccid });
     }
   }
   return [...byId.values()];
@@ -99,8 +162,9 @@ export function resolveUboCases(
     });
   }
 
-  // No individual case ids available (sandbox today): keep the org-chart-derived
-  // required people, unresolved — caller falls back to the company case.
+  // No individual case ids available (sandbox before the linkage lands): keep
+  // the org-chart-derived required people, unresolved — caller falls back to
+  // the company case.
   return requiredNames.map((r) => ({ ...r, memberCaseCommonId: null }));
 }
 

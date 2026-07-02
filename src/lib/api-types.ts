@@ -5,16 +5,24 @@
 
 export interface SessionInfo {
   tenantId: string | null;
-  ephemeral: boolean;
   expiresAt: string | null;
   baseUrl: string;
   /**
-   * "byo"     — connected with the tester's own pasted sandbox credentials
-   *             (their tenant; tenantId carries the clientId for confirmation).
-   * "static"  — fixed env credentials (e.g. the live-env instance).
-   * "sandbox" — the public demo path (auto-provisioned throwaway tenant).
+   * "byo"          — connected with the tester's own pasted sandbox credentials
+   *                  (their tenant; tenantId carries the clientId for
+   *                  confirmation).
+   * "static"       — fixed env credentials: the deployment owner's own tenant
+   *                  (e.g. the live-env instance or a self-hosted clone).
+   * "disconnected" — no credentials anywhere. The journey is gated behind the
+   *                  connect screen; request access via the developer portal.
    */
-  mode?: "byo" | "static" | "sandbox";
+  mode?: "byo" | "static" | "disconnected";
+  /**
+   * How case events reach the app: true = the server receives sandbox webhooks
+   * (APP_PUBLIC_URL is set) and the browser follows the local event stream;
+   * false = the browser polls case status directly (the polling alternative).
+   */
+  webhooks?: boolean;
 }
 
 export interface ApiError {

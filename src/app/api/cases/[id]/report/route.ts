@@ -8,7 +8,7 @@
 // Returns the upstream status (e.g. 409 while still building) as JSON so the
 // client can show a clear message.
 import { kyc, KycApiError } from "@/server/kyc-client";
-import { handleExpiredSandbox } from "@/server/auth";
+import { NotConnectedError } from "@/server/auth";
 import { reportHeaders } from "@/lib/report-download";
 
 export const dynamic = "force-dynamic";
@@ -19,8 +19,10 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
     const { bytes, contentType, contentLength } = await kyc.getReportRaw(Number(id));
     return new Response(bytes, { status: 200, headers: reportHeaders(id, contentType, contentLength) });
   } catch (err) {
+    if (err instanceof NotConnectedError) {
+      return Response.json({ error: "not_connected", detail: err.message }, { status: 401 });
+    }
     if (err instanceof KycApiError) {
-      if (err.status === 410) handleExpiredSandbox();
       const message =
         err.status === 409
           ? "The report is not ready yet — the case is still building."

@@ -33,6 +33,15 @@ const OWNERSHIP_THRESHOLD = 25;
 // a passport). Conservative substring check on common entity suffixes.
 const ENTITY_SUFFIX = /\b(LIMITED|LTD|LLP|PLC|INC|GMBH|GROUP|HOLDINGS|CO|COMPANY|PTE|PRIVATE)\b/i;
 
+/**
+ * Name-based entity heuristic, exported for reuse (member-resolve.ts falls back
+ * to it when a member record carries no explicit memberType). True when the
+ * name looks like a company, not a person.
+ */
+export function looksLikeEntityName(name: string): boolean {
+  return ENTITY_SUFFIX.test(name);
+}
+
 function isIndividual(n: OrgNode): boolean {
   // Treat explicit corporate roles / entity-suffixed names as non-individuals.
   if (n.role && /significantcontrol/i.test(n.role) && ENTITY_SUFFIX.test(n.name)) return false;

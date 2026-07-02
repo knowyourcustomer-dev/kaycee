@@ -1,21 +1,21 @@
 /**
  * session-seal.ts — STATELESS per-session credential carrier. Server-only.
  * ========================================================================
- * Implements the "bring your own sandbox credentials" (BYO) flow. There is NO
- * server-side session map.
+ * Mirrors the Workspace console (workspace.knowyourcustomer.dev) so the
+ * "bring your own sandbox credentials" (BYO) flow behaves identically across
+ * the two surfaces. There is NO server-side session map.
  *
- * When a developer pastes their OWN sandbox clientId / clientSecret (issued by
- * the developer portal), we verify them and then seal the pair (AES-256-GCM
- * authenticated encryption) into the value of an HttpOnly session cookie. Any
- * replica (including a cold-started one) can UNSEAL the cookie with the shared
+ * When a tester pastes their OWN sandbox clientId / clientSecret (issued by the
+ * dev portal), we verify them and then seal the pair — AES-256-GCM authenticated
+ * encryption — into the value of an HttpOnly session cookie. Any replica
+ * (including a cold-started one) can UNSEAL the cookie with the shared
  * SESSION_SECRET and recover the creds, so the BYO session survives across
  * replicas / cold starts without a shared store.
  *
- * WHY BYO: the public demo auto-provisions a throwaway tenant, so a developer
- * who asked for sandbox access on the portal would otherwise see a DIFFERENT
- * tenant here than in the API. Sealing their pasted creds into this session
- * points the sample onboarding flow at THEIR tenant, so they see the same cases
- * everywhere their credentials are used.
+ * WHY BYO: the public demo auto-provisions a throwaway tenant, so a tester who
+ * asked for sandbox access on the portal would otherwise see a DIFFERENT tenant
+ * here than in the API / Console. Sealing their pasted creds into this session
+ * points the sample onboarding flow at THEIR tenant — the same cases everywhere.
  *
  * SECURITY:
  *   - HttpOnly + Secure + SameSite=Lax: the browser never exposes the cookie to

@@ -4,28 +4,39 @@
  * Journey.tsx — Kaycee Bank SME corporate account-opening journey
  * (CUSTOMER-FACING). A new business customer opens an account for their company.
  *
+ * CONNECT GATE: the journey requires credentials. When the session is
+ * "disconnected" (no BYO cookie, no env creds) the connect screen replaces the
+ * journey — paste the client ID + secret issued via the developer-portal
+ * access request (https://knowyourcustomer.com/developers/access/). A static
+ * deployment (SANDBOX_CLIENT_ID/SECRET in env) is already connected and runs
+ * headlessly as before.
+ *
  * Phases:
  *   1 IDENTIFY   find the company (POST /api/search; substring or exact name)
  *   2 CONFIRM    acknowledge the entity -> create the case (POST /api/cases)
  *   3 DETAILS    while the case builds, collect the bank questionnaire and
  *                attach it to the case as a note (POST /api/cases/{id}/note)
- *   4 VERIFYING  poll to ready; developer-view debug stream shows raw calls + states
+ *   4 VERIFYING  flip to ready on the CaseReady WEBHOOK event (the recommended
+ *                integration; a slow direct status check is the safety net) —
+ *                or, without APP_PUBLIC_URL, poll status (the documented
+ *                polling alternative). Internal debug stream shows raw calls,
+ *                states, and received webhook events.
  *   5 DOCUMENTS  ID upload per >25% owner (or directors + largest), + a board
  *                resolution; deterministic prevalidation (good/forged/expired)
  *   6 SCREENING  automatic World-Check (LSEG) result, read-only
  *   7 DONE       bank-typical closing; auto-close; the customer message FOLLOWS
- *                the sandbox-derived decision; report in developer view
+ *                the sandbox-derived decision; report in internal view
  *
- * DEVELOPER VIEW (default ON, toggle to OFF): a demo affordance, NOT real auth.
+ * INTERNAL VIEW (default ON, toggle to OFF): a demo affordance — NOT real auth.
  * It reveals the raw API debug stream (phase 4) and the close-report download
- * (phase 7). Turn it off to see the customer-facing journey on its own.
+ * (phase 7). In real use it would be off for customers.
  *
  * The sandbox client secret stays server-side (BFF); the browser only calls
  * /api/* on this same server.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { bff } from "@/lib/bff-fetch";
+import { bff, BffError } from "@/lib/bff-fetch";
 import {
   COUNTRIES,
   SAMPLE_COMPANIES,
@@ -56,7 +67,7 @@ export default function Journey() {
   const [error, setError] = useState<string | null>(null);
   const [session, setSession] = useState<(SessionInfo & { version?: string }) | null>(null);
 
-  // debug stream (developer view)
+  // debug stream (internal view)
   const [debug, setDebug] = useState<DebugLine[]>([]);
   const log = useCallback((text: string) => {
     setDebug((d) => [...d, { t: new Date().toISOString().slice(11, 19), text }]);
@@ -102,26 +113,38 @@ export default function Journey() {
     return bff<SessionInfo & { version?: string }>("/api/session")
       .then((s) => {
         setSession(s);
-        const where =
-          s.mode === "byo"
-            ? `your sandbox (${s.tenantId})`
-            : s.ephemeral
-              ? "ephemeral demo tenant"
-              : "static creds";
-        log(`session ready · API ${s.version} · ${where}`);
+        if (s.mode === "disconnected") {
+          log("no credentials — journey gated behind the connect screen");
+        } else {
+          const where =
+            s.mode === "byo" ? `your sandbox (${s.tenantId})` : "static credentials (deployment tenant)";
+          log(
+            `session ready · API ${s.version} · ${where} · case events via ${s.webhooks ? "webhooks" : "polling"}`,
+          );
+        }
         return s;
       })
-      .catch(fail);
+      .catch((e) => {
+        // A 401 means the BYO cookie's credentials expired/were rejected —
+        // treat it as disconnected so the connect gate shows with the message.
+        if (e instanceof BffError && e.status === 401) {
+          setSession({ tenantId: null, expiresAt: null, baseUrl: "", mode: "disconnected" });
+          setError(e.message);
+          return undefined;
+        }
+        fail(e);
+        return undefined;
+      });
   }, [log]);
 
   useEffect(() => {
     loadSession().then(() => setPhase(0));
   }, [loadSession]);
 
-  // BYO ("bring your own") credentials: paste your own sandbox client id/secret
-  // so the whole journey runs against YOUR tenant, showing the same cases you
-  // see when you call the API directly. The secret is posted once to our BFF,
-  // sealed server-side into an HttpOnly cookie, and never held in browser state.
+  // BYO ("bring your own") credentials — paste your own sandbox client id/secret
+  // so the whole journey runs against YOUR tenant (same cases as the API and the
+  // Workspace Console). The secret is posted once to our BFF, sealed server-side
+  // into an HttpOnly cookie, and never held in browser state.
   const [showConnect, setShowConnect] = useState(false);
   const connectSandbox = useCallback(
     async (clientId: string, clientSecret: string) => {
@@ -140,7 +163,7 @@ export default function Journey() {
     setError(null);
     await bff("/api/session/credentials", { method: "DELETE" });
     await loadSession();
-    log(`disconnected — using the public demo sandbox`);
+    log(`disconnected from your sandbox tenant`);
   }, [loadSession, log]);
 
   // ---- phase 1: search -----------------------------------------------------
@@ -200,18 +223,115 @@ export default function Journey() {
     [iso, log],
   );
 
-  // ---- phase 4: poll to ready (starts once we leave phase 3) --------------
-  const startPolling = useCallback(() => {
+  // ---- phase 4: get to ready — WEBHOOKS preferred, POLLING the alternative --
+  //
+  // WEBHOOK MODE (session.webhooks — APP_PUBLIC_URL is set on the server): the
+  // sandbox POSTs case events to our BFF callback; the browser follows the
+  // local event store via GET /api/cases/{id}/events (cheap, no sandbox
+  // traffic) and flips to ready on the CaseReady event. This is how the real
+  // KYC product notifies integrators — build against events, not polling.
+  // A SLOW direct status check (every ~24s) is kept as the POLLING FALLBACK
+  // safety net: a lost webhook delivery or a server cold start (the event
+  // store is in-memory) can never wedge the journey.
+  //
+  // POLLING MODE (the documented alternative — e.g. a local clone the sandbox
+  // cannot reach): poll GET /v2/Companies/{id} every 3s until statusId === 3.
+  const unmounted = useRef(false);
+  useEffect(() => () => void (unmounted.current = true), []);
+  const eventCursor = useRef(0);
+
+  /** One direct case-status check; returns true when the case is Ready. */
+  const checkStatus = useCallback(async (): Promise<boolean> => {
+    const r = await bff<any>(`/api/cases/${caseId}`);
+    const c = r.caseDetail.details.common;
+    setCommon(c);
+    log(`GET /v2/Companies/${caseId} -> statusId=${statusLabel(c.statusId, c)} · ${c.complete}%`);
+    return c.statusId === STATUS_READY;
+  }, [caseId, log]);
+
+  /** Pull new webhook events into the internal debug stream; true when CaseReady seen. */
+  const pullEvents = useCallback(async (): Promise<boolean> => {
+    const r = await bff<{
+      events: Array<{ eventType: string; body: any }>;
+      cursor: number;
+      ready: boolean;
+    }>(`/api/cases/${caseId}/events?since=${eventCursor.current}`);
+    for (const ev of r.events) {
+      log(`webhook ${ev.eventType} — ${ev.body?.message || `case ${ev.body?.caseCommonId}`}`);
+    }
+    eventCursor.current = r.cursor;
+    return r.ready;
+  }, [caseId, log]);
+
+  /**
+   * After ready, keep following webhook events at a relaxed interval so the
+   * internal debug stream shows the rest of the journey's events live
+   * (DocumentUploaded, AmlMatch, CaseClosed) — a working demo of the feature.
+   */
+  const followEvents = useCallback(() => {
+    const tail = async () => {
+      if (unmounted.current) return;
+      try {
+        await pullEvents();
+      } catch {}
+      setTimeout(tail, 4000);
+    };
+    setTimeout(tail, 4000);
+  }, [pullEvents]);
+
+  const startVerifying = useCallback(() => {
     if (caseId == null || polling.current) return;
     polling.current = true;
     setPhase(3);
+
+    if (session?.webhooks) {
+      log("waiting for the CaseReady webhook (slow status check as safety net)");
+      let ticks = 0;
+      let ready = false;
+      const tick = async () => {
+        if (unmounted.current) return;
+        ticks++;
+        try {
+          if (await pullEvents()) ready = true;
+        } catch {
+          // The events endpoint is local; a transient failure just means we
+          // try again next tick (and the safety net below still runs).
+        }
+        if (ready) {
+          // Refresh the case once so the status badge flips, then proceed.
+          try {
+            await checkStatus();
+          } catch {}
+          await loadReady();
+          followEvents(); // keep streaming webhook events into the debug view
+          return;
+        }
+        // POLLING FALLBACK (safety net): one direct status check every ~24s in
+        // case a delivery was lost or the event store was cold-started.
+        if (ticks % 12 === 0) {
+          try {
+            if (await checkStatus()) {
+              await loadReady();
+              followEvents();
+              return;
+            }
+          } catch (e) {
+            fail(e);
+            return;
+          }
+        }
+        setTimeout(tick, 2000);
+      };
+      tick();
+      return;
+    }
+
+    // POLLING (the alternative when webhooks can't reach this app): the classic
+    // status loop — check every 3s until the case reports Ready.
     const tick = async () => {
+      if (unmounted.current) return;
       try {
-        const r = await bff<any>(`/api/cases/${caseId}`);
-        const c = r.caseDetail.details.common;
-        setCommon(c);
-        log(`GET /v2/Companies/${caseId} -> statusId=${statusLabel(c.statusId, c)} · ${c.complete}%`);
-        if (c.statusId === STATUS_READY) {
+        if (await checkStatus()) {
           await loadReady();
           return;
         }
@@ -222,7 +342,7 @@ export default function Journey() {
       setTimeout(tick, 3000);
     };
     tick();
-  }, [caseId, log]);
+  }, [caseId, session, log, checkStatus, pullEvents, followEvents]);
 
   const loadReady = useCallback(async () => {
     if (caseId == null) return;
@@ -276,8 +396,8 @@ export default function Journey() {
     if (caseId == null) return;
     setError(null);
     log("questionnaire captured — verifying company (note attaches once ready)");
-    startPolling();
-  }, [caseId, log, startPolling]);
+    startVerifying();
+  }, [caseId, log, startVerifying]);
 
   // ---- phase 5: document uploads (multipart, real file bytes) -------------
   // Posts a real file as multipart/form-data to the given BFF endpoint and
@@ -381,6 +501,35 @@ export default function Journey() {
 
   const companyName = picked?.rawname || "your company";
   const today = new Date().toISOString().slice(0, 10);
+
+  // Session still loading (first GET /api/session in flight).
+  if (session === null) {
+    return (
+      <div className="container">
+        {error && <div className="error-box">We hit a problem: {error}</div>}
+        <div className="card">
+          <p className="subtle">Loading…</p>
+        </div>
+      </div>
+    );
+  }
+
+  // CONNECT GATE — no credentials anywhere (and no auto-provisioned demo
+  // tenant; that path no longer exists). The journey stays locked until the
+  // user connects with their own client ID + secret from the developer-portal
+  // access request. Static deployments (env creds) never reach this branch.
+  if (session.mode === "disconnected") {
+    return (
+      <div className="container">
+        {error && <div className="error-box">We hit a problem: {error}</div>}
+        <ConnectSandbox
+          gate
+          onSubmit={connectSandbox}
+          baseUrl={session.baseUrl || undefined}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="container">
@@ -570,13 +719,13 @@ export default function Journey() {
         </div>
       )}
 
-      {/* Developer view: API debug stream */}
+      {/* INTERNAL: debug stream */}
       {internalView && phase >= 2 && (
         <div className="card" style={{ borderColor: "var(--color-primary)" }}>
-          <h2>Developer view · API debug stream</h2>
+          <h2>Internal · API debug stream</h2>
           <p className="subtle">
-            Raw sandbox calls and status transitions. A demo affordance, hidden when the
-            developer view is off.
+            Raw sandbox calls and status transitions. Internal-only demo affordance — hidden when the
+            internal view is off.
           </p>
           <div className="poll-log">
             {debug.map((l, i) => (
@@ -754,8 +903,8 @@ export default function Journey() {
           )}
           {internalView && (
             <div className="callout">
-              <strong>Developer view</strong> · case auto-closed. Sandbox decision:{" "}
-              <strong>{common?.caseDecision ?? decision ?? "n/a"}</strong>.{" "}
+              <strong>Internal</strong> — case auto-closed. Sandbox decision:{" "}
+              <strong>{common?.caseDecision ?? decision ?? "—"}</strong>.{" "}
               <a href={`/api/cases/${caseId}/report`} target="_blank" rel="noreferrer">
                 Download close report (PDF)
               </a>
@@ -827,9 +976,9 @@ function InternalToggle({ on, onChange }: { on: boolean; onChange: (v: boolean) 
     <button
       className={`btn ${on ? "" : "secondary"}`}
       onClick={() => onChange(!on)}
-      title="Demo affordance, not real authentication"
+      title="Demo affordance — not real authentication"
     >
-      Developer view: {on ? "ON" : "OFF"}
+      Internal view: {on ? "ON" : "OFF"}
     </button>
   );
 }
@@ -845,9 +994,10 @@ function StatusBadge({ common }: { common: any | null }) {
 }
 
 /**
- * TenantBadge — shows WHICH sandbox this session is pointed at, and lets the
- * developer connect their own credentials (BYO) or disconnect back to the
- * public demo tenant.
+ * TenantBadge — shows WHICH sandbox tenant this session is pointed at, and
+ * lets the tester connect their own credentials (BYO) or disconnect. Mirrors
+ * the Workspace Console's "connected tenant" affordance in Kaycee's own skin.
+ * (There is no "public demo" tenant any more — sessions are BYO or static.)
  */
 function TenantBadge({
   session,
@@ -865,17 +1015,18 @@ function TenantBadge({
         <span className="badge ready" title={`Connected to your sandbox: ${session.tenantId}`}>
           Your sandbox · {session.tenantId}
         </span>
-        <button className="btn secondary" onClick={onDisconnect} title="Disconnect and use the public demo sandbox">
+        <button className="btn secondary" onClick={onDisconnect} title="Disconnect this sandbox tenant">
           Disconnect
         </button>
       </span>
     );
   }
-  const label = session.mode === "static" ? "Static sandbox" : "Public demo sandbox";
+  // Static: the deployment owner's own tenant from the environment. A tester
+  // can still connect THEIR credentials on top (BYO takes precedence).
   return (
     <span className="row" style={{ gap: 6, alignItems: "center" }}>
-      <span className="badge building" title="This journey runs against a shared/throwaway tenant">
-        {label}
+      <span className="badge building" title="This deployment's configured tenant (SANDBOX_CLIENT_ID/SECRET)">
+        Deployment sandbox
       </span>
       <button className="btn secondary" onClick={onConnect} title="Run this journey against your own sandbox tenant">
         Connect your sandbox
@@ -885,18 +1036,25 @@ function TenantBadge({
 }
 
 /**
- * ConnectSandbox — paste the clientId + clientSecret issued by the dev portal.
- * The values are POSTed once to our BFF, which verifies and seals them into an
- * HttpOnly cookie; they are not retained in browser state after submit.
+ * ConnectSandbox — paste the clientId + clientSecret issued via the
+ * developer-portal access request. The values are POSTed once to our BFF,
+ * which verifies and seals them into an HttpOnly cookie; they are not retained
+ * in browser state after submit.
+ *
+ * `gate` renders it as the mandatory pre-journey gate (no Cancel — there is
+ * nothing to fall back to); without `gate` it is the optional
+ * switch-your-tenant card shown over a connected session.
  */
 function ConnectSandbox({
   onSubmit,
   onCancel,
   baseUrl,
+  gate = false,
 }: {
   onSubmit: (clientId: string, clientSecret: string) => Promise<void>;
-  onCancel: () => void;
+  onCancel?: () => void;
   baseUrl?: string;
+  gate?: boolean;
 }) {
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
@@ -920,13 +1078,20 @@ function ConnectSandbox({
 
   return (
     <div className="card" style={{ marginBottom: 12 }}>
-      <h2>Connect your sandbox</h2>
+      <h2>{gate ? "Connect your sandbox to start" : "Connect your sandbox"}</h2>
       <p className="subtle">
         Paste the <strong>client ID</strong> and <strong>client secret</strong> you were emailed when
         you requested sandbox access. This runs the whole journey against{" "}
         <strong>your own sandbox tenant</strong>
         {baseUrl ? ` (${baseUrl})` : ""} — the same cases you see via the API and the Workspace console.
         Your secret is sent once to this server and kept server-side; it is never stored in your browser.
+      </p>
+      <p className="subtle">
+        Don&apos;t have credentials yet?{" "}
+        <a href="https://knowyourcustomer.com/developers/access/" target="_blank" rel="noreferrer">
+          Request sandbox access
+        </a>{" "}
+        via the developer portal (approval-gated) — your client ID and secret arrive by email.
       </p>
       <div style={{ display: "grid", gap: 8, maxWidth: 520 }}>
         <Field label="Client ID">
@@ -956,9 +1121,11 @@ function ConnectSandbox({
           >
             {busy ? "Connecting…" : "Connect"}
           </button>
-          <button className="btn secondary" onClick={onCancel} disabled={busy}>
-            Cancel
-          </button>
+          {!gate && onCancel && (
+            <button className="btn secondary" onClick={onCancel} disabled={busy}>
+              Cancel
+            </button>
+          )}
         </div>
       </div>
     </div>

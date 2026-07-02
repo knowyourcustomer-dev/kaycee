@@ -18,7 +18,7 @@
 
 import "server-only";
 import { config } from "./config";
-import { getBearerToken, handleExpiredSandbox } from "./auth";
+import { getBearerToken } from "./auth";
 
 /* ------------------------------------------------------------------ *
  * Types — the slice of the v2 contract this reference app touches.
@@ -130,54 +130,44 @@ async function request<T>(
     binary?: boolean;
   } = {},
 ): Promise<T> {
-  // One transparent retry: if a mid-session call reports the sandbox tenant is
-  // gone/expired (401/410), let the auth layer re-provision (sandbox mode) and
-  // try again with a fresh token. Static mode does not re-provision.
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const token = await getBearerToken();
-    const headers: Record<string, string> = {
-      Accept: "application/json",
-      Authorization: `Bearer ${token}`,
-    };
-    let body: BodyInit | undefined;
-    if (opts.json !== undefined) {
-      headers["Content-Type"] = "application/json";
-      body = JSON.stringify(opts.json);
-    } else if (opts.multipart) {
-      // Do NOT set Content-Type — fetch sets multipart/form-data + boundary.
-      body = opts.multipart;
-    } else if (opts.form) {
-      headers["Content-Type"] = "application/x-www-form-urlencoded";
-      body = new URLSearchParams(opts.form).toString();
-    }
-
-    const res = await fetch(`${config.baseUrl}${path}`, {
-      method,
-      headers,
-      body,
-      cache: "no-store",
-    });
-
-    if (!res.ok) {
-      const text = await res.text();
-      const expiredTenant =
-        res.status === 410 || (res.status === 401 && /sandbox/i.test(text));
-      // Only the DEMO path re-provisions; BYO/static return false and surface
-      // the error instead of silently switching the tester to a fresh tenant.
-      if (expiredTenant && attempt === 0 && (await handleExpiredSandbox())) {
-        continue; // re-provisioned; retry once with a fresh tenant
-      }
-      throw new KycApiError(res.status, text, method, path);
-    }
-    if (opts.binary) {
-      const buf = await res.arrayBuffer();
-      return buf as unknown as T;
-    }
-    const text = await res.text();
-    return (text ? JSON.parse(text) : {}) as T;
+  // No transparent retry/re-provision: the credentials are ALWAYS the user's
+  // own (BYO cookie or static env). If the tenant is gone/expired (401/410) the
+  // error surfaces so the tester re-connects with fresh credentials — we never
+  // silently switch them to a different tenant.
+  const token = await getBearerToken();
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    Authorization: `Bearer ${token}`,
+  };
+  let body: BodyInit | undefined;
+  if (opts.json !== undefined) {
+    headers["Content-Type"] = "application/json";
+    body = JSON.stringify(opts.json);
+  } else if (opts.multipart) {
+    // Do NOT set Content-Type — fetch sets multipart/form-data + boundary.
+    body = opts.multipart;
+  } else if (opts.form) {
+    headers["Content-Type"] = "application/x-www-form-urlencoded";
+    body = new URLSearchParams(opts.form).toString();
   }
-  // Unreachable (loop either returns or throws), but satisfies the type checker.
-  throw new KycApiError(0, "request retry exhausted", method, path);
+
+  const res = await fetch(`${config.baseUrl}${path}`, {
+    method,
+    headers,
+    body,
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new KycApiError(res.status, text, method, path);
+  }
+  if (opts.binary) {
+    const buf = await res.arrayBuffer();
+    return buf as unknown as T;
+  }
+  const text = await res.text();
+  return (text ? JSON.parse(text) : {}) as T;
 }
 
 /* ------------------------------------------------------------------ *
@@ -336,33 +326,28 @@ export const kyc = {
 
 /**
  * Like request(), but returns the raw bytes plus the upstream content-type and
- * length, with the same transparent expired-sandbox retry. Used for binary
- * downloads (the report) so we don't lose the content-type.
+ * length. Used for binary downloads (the report) so we don't lose the
+ * content-type. Same no-retry policy as request(): 401/410 surface to the user.
  */
 export async function requestRaw(
   method: string,
   path: string,
 ): Promise<{ bytes: ArrayBuffer; contentType: string; contentLength: string | null }> {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const token = await getBearerToken();
-    const res = await fetch(`${config.baseUrl}${path}`, {
-      method,
-      headers: { Accept: "*/*", Authorization: `Bearer ${token}` },
-      cache: "no-store",
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      const expiredTenant = res.status === 410 || (res.status === 401 && /sandbox/i.test(text));
-      if (expiredTenant && attempt === 0 && (await handleExpiredSandbox())) continue;
-      throw new KycApiError(res.status, text, method, path);
-    }
-    const bytes = await res.arrayBuffer();
-    return {
-      bytes,
-      // Trust the upstream content-type; default to PDF for the cached placeholder.
-      contentType: res.headers.get("content-type") || "application/pdf",
-      contentLength: res.headers.get("content-length"),
-    };
+  const token = await getBearerToken();
+  const res = await fetch(`${config.baseUrl}${path}`, {
+    method,
+    headers: { Accept: "*/*", Authorization: `Bearer ${token}` },
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new KycApiError(res.status, text, method, path);
   }
-  throw new KycApiError(0, "request retry exhausted", method, path);
+  const bytes = await res.arrayBuffer();
+  return {
+    bytes,
+    // Trust the upstream content-type; default to PDF for the cached placeholder.
+    contentType: res.headers.get("content-type") || "application/pdf",
+    contentLength: res.headers.get("content-length"),
+  };
 }
