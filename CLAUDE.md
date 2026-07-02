@@ -8,8 +8,8 @@ This file orients Claude Code (and other coding agents) working in this reposito
 
 Fetch the API's machine-readable guide and build against it rather than guessing:
 
-- Full self-contained guide: https://knowyourcustomer.com/developers/llms-full.txt
-- Link map: https://knowyourcustomer.com/developers/llms.txt
+- Full self-contained guide: https://knowyourcustomer.com/developers/llms-full.md
+- Link map: https://knowyourcustomer.com/developers/llms.md
 
 It covers auth, the case model, the "readiness = structure populated, not the status field" seam, beneficial ownership, documents, AML, IDV, the error model, and per-jurisdiction latency. Fetch it once and keep it in context (in Claude Code, use WebFetch); it is written for agents and avoids the token cost of scraping the HTML docs.
 

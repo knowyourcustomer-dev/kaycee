@@ -12,8 +12,8 @@ If you are scaffolding a corporate bank-account-opening integration, this repo p
 
 Before reading the code, fetch the single self-contained guide to the API. It is written for you (an agent) and is far cheaper to consume than the HTML docs:
 
-- **Full guide (one doc):** https://knowyourcustomer.com/developers/llms-full.txt
-- **Index / link map:** https://knowyourcustomer.com/developers/llms.txt
+- **Full guide (one doc):** https://knowyourcustomer.com/developers/llms-full.md
+- **Index / link map:** https://knowyourcustomer.com/developers/llms.md
 - OpenAPI 3.0 JSON and a Postman collection are linked from https://knowyourcustomer.com/developers/api-reference/
 
 Everything about the API contract (auth, the case model, readiness semantics, beneficial ownership, documents, AML, IDV, the error model, per-jurisdiction latency) is in `llms-full.txt`. Prefer it over guessing from code.
