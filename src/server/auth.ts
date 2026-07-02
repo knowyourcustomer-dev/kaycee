@@ -1,32 +1,31 @@
 /**
  * auth.ts — the token broker. Lives ONLY on the server.
  *
- * THREE credential sources, in strict precedence order, resolved per request:
+ * TWO credential sources, in strict precedence order, resolved per request:
  *
- *   1. BYO (bring your own): the developer pasted THEIR sandbox clientId/secret
- *      on the connect screen; they are sealed (AES-256-GCM) into the HttpOnly
+ *   1. BYO (bring your own): the tester pasted THEIR sandbox clientId/secret on
+ *      the connect screen; they are sealed (AES-256-GCM) into the HttpOnly
  *      session cookie (session-context.ts / session-seal.ts). When present, the
- *      sample flow runs against the DEVELOPER'S tenant, so they see the same
- *      cases they see when calling the API directly. Minted per request, NEVER
- *      cached in a module global (a process global would leak one session's
- *      token to another).
- *   2. STATIC: long-lived creds from SANDBOX_CLIENT_ID / SANDBOX_CLIENT_SECRET.
- *      No provisioning.
- *   3. DEMO auto-provision: no creds anywhere, so provision a throwaway tenant
- *      so the public no-login demo still works.
+ *      sample flow runs against the TESTER'S tenant — the same cases they see in
+ *      the API and the Workspace Console. Minted per request, NEVER cached in a
+ *      module global (a process global would leak one tester's token to another).
+ *   2. STATIC: long-lived creds from SANDBOX_CLIENT_ID / SANDBOX_CLIENT_SECRET —
+ *      the deployment owner's OWN credentials in the environment (e.g. the
+ *      live-env instance, or a self-hosted clone). No provisioning.
  *
- * GUARD: BYO and STATIC must NEVER auto-provision on 401/410 — they surface the
- * error (expired/invalid sandbox) so the tester re-connects. ONLY the demo path
- * provisions. This is the whole point: a BYO tester must never be silently
- * bounced onto a fresh throwaway tenant behind their back.
+ * With NEITHER, the session is DISCONNECTED: every API-touching call throws
+ * NotConnectedError and the UI shows the connect screen. There is NO
+ * auto-provisioning fallback — users obtain credentials through the
+ * developer-portal access request (https://knowyourcustomer.com/developers/access/)
+ * and paste them into the app (or set them in the env for a private deployment).
  *
  * The client secret NEVER leaves this process in plaintext. The browser talks
  * to our own route handlers (the BFF); the BFF attaches the bearer token here.
  * For BYO the secret lives only inside the ENCRYPTED cookie blob, which the
  * browser cannot read (HttpOnly) or decrypt.
  *
- * The module-level token/creds caches below are used ONLY by the static/demo
- * (process-single-tenant) paths — never by BYO.
+ * The module-level token cache below is used ONLY by the static
+ * (process-single-tenant) path — never by BYO.
  */
 
 import "server-only";
@@ -34,21 +33,12 @@ import { config, hasStaticCredentials } from "./config";
 import { currentSessionCredentials } from "./session-context";
 import { sealCredentials, type SessionCredentials } from "./session-seal";
 
-/** Thrown when a BYO session's credentials are missing / rejected / expired. */
+/** Thrown when there are no usable credentials for this request. */
 export class NotConnectedError extends Error {
   constructor(message = "Not connected. Paste fresh sandbox credentials.") {
     super(message);
     this.name = "NotConnectedError";
   }
-}
-
-interface Credentials {
-  clientId: string;
-  clientSecret: string;
-  scope: string;
-  tenantId?: string;
-  expiresAt?: string;
-  ephemeral: boolean;
 }
 
 interface CachedToken {
@@ -57,67 +47,8 @@ interface CachedToken {
   refreshAt: number;
 }
 
-// Module-level caches — STATIC/DEMO paths ONLY. BYO never touches these.
-let credsPromise: Promise<Credentials> | null = null;
+// Module-level token cache — STATIC path ONLY. BYO never touches this.
 let cachedToken: CachedToken | null = null;
-
-/* -------------------------------------------------------------------------
- * EXTENSION POINT — FUTURE SELF-SERVICE SIGNUP GATE
- * -------------------------------------------------------------------------
- * Today, a credential-less dev is auto-provisioned a fresh sandbox directly
- * against the OPEN `POST /sandbox/provision` endpoint (no auth, no gate). When
- * the Phase 2 click-through-agreement lands, REPLACE the provision call in
- * `provisionSandbox()` with the gated flow. Everything downstream is unchanged.
- * ------------------------------------------------------------------------- */
-
-async function provisionSandbox(): Promise<Credentials> {
-  const res = await fetch(`${config.baseUrl}/sandbox/provision`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ label: "kaycee-onboarding-web" }), // <-- gate goes here
-    cache: "no-store",
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Sandbox provision failed (HTTP ${res.status}): ${text}`);
-  }
-  const data = await res.json();
-  return {
-    clientId: data.clientId,
-    clientSecret: data.clientSecret,
-    scope: data.scope || config.scope,
-    tenantId: data.tenantId,
-    expiresAt: data.expiresAt,
-    ephemeral: true,
-  };
-}
-
-/**
- * Non-BYO credential source: STATIC env creds, else DEMO auto-provision.
- * (BYO is resolved separately, per request, from the sealed cookie.)
- */
-async function obtainCredentials(): Promise<Credentials> {
-  if (hasStaticCredentials()) {
-    return {
-      clientId: config.clientId as string,
-      clientSecret: config.clientSecret as string,
-      scope: config.scope,
-      ephemeral: false,
-    };
-  }
-  return provisionSandbox();
-}
-
-/** Load static/demo credentials once and memoise the promise. */
-function getCredentials(): Promise<Credentials> {
-  if (!credsPromise) {
-    credsPromise = obtainCredentials().catch((err) => {
-      credsPromise = null; // allow retry on next call
-      throw err;
-    });
-  }
-  return credsPromise;
-}
 
 /** Low-level token exchange. Returns null on auth failure (401/403/410). */
 async function mintTokenRaw(creds: {
@@ -188,11 +119,11 @@ export async function connect(
  * Return a valid bearer token for THIS request.
  *
  *   - BYO session present  -> mint from the sealed cookie creds, per request,
- *     no module cache. On 401/410 throw NotConnectedError — NEVER provision.
- *   - STATIC creds         -> module-cached token; on 401/410 throw — NEVER
- *     provision.
- *   - DEMO (no creds)      -> module-cached token; on 401/410 re-provision a
- *     fresh tenant once and retry (the only path that provisions).
+ *     no module cache. On 401/410 throw NotConnectedError — the tester
+ *     re-connects with fresh credentials.
+ *   - STATIC creds         -> module-cached token; on 401/410 throw a clear
+ *     config error.
+ *   - Neither              -> throw NotConnectedError. NEVER provision.
  */
 export async function getBearerToken(): Promise<string> {
   // 1. BYO — the tester's own tenant. Stateless: mint per request.
@@ -207,49 +138,32 @@ export async function getBearerToken(): Promise<string> {
     return token.accessToken;
   }
 
-  // 2 & 3. Static / demo — module-cached token.
+  // 2. Static — the deployment's own env credentials, module-cached token.
+  if (!hasStaticCredentials()) {
+    throw new NotConnectedError(
+      "Not connected. Request sandbox access at https://knowyourcustomer.com/developers/access/ and paste your client ID and secret to start.",
+    );
+  }
   if (cachedToken && Date.now() < cachedToken.refreshAt) {
     return cachedToken.accessToken;
   }
-  let creds = await getCredentials();
-  let token = await mintTokenRaw(creds);
-
+  const token = await mintTokenRaw({
+    clientId: config.clientId as string,
+    clientSecret: config.clientSecret as string,
+    scope: config.scope,
+  });
   if (!token) {
-    if (hasStaticCredentials()) {
-      // STATIC mode: do NOT provision. Surface a clear error.
-      throw new Error(
-        "Token request failed: the configured credentials were rejected (401/410). " +
-          "Check SANDBOX_CLIENT_ID / SANDBOX_CLIENT_SECRET.",
-      );
-    }
-    // DEMO mode: tenant gone/expired — re-provision and retry once.
-    resetSession();
-    creds = await getCredentials();
-    token = await mintTokenRaw(creds);
-    if (!token) {
-      throw new Error("Token request failed after re-provisioning a fresh sandbox tenant.");
-    }
+    // STATIC mode: do NOT provision. Surface a clear error.
+    throw new Error(
+      "Token request failed: the configured credentials were rejected (401/410). " +
+        "Check SANDBOX_CLIENT_ID / SANDBOX_CLIENT_SECRET.",
+    );
   }
-
   cachedToken = token;
   return cachedToken.accessToken;
 }
 
-/**
- * Called by the API client when a downstream /v2 call reports the sandbox is
- * gone/expired (410/401-with-sandbox). Returns true only when a re-provision
- * will actually be attempted — i.e. the DEMO path. Returns false for BYO and
- * STATIC so the client does NOT retry and instead surfaces the error.
- */
-export async function handleExpiredSandbox(): Promise<boolean> {
-  // BYO: never provision. The tester's tenant expiring is a real, surfaced state.
-  if (await currentSessionCredentials()) return false;
-  if (hasStaticCredentials()) return false;
-  resetSession();
-  return true;
-}
-
-/** Surface non-secret session info for the UI status banner. */
+/** Surface non-secret session info for the UI status banner / connect gate. */
 export async function getSessionInfo() {
   const byo = await currentSessionCredentials();
   if (byo) {
@@ -257,24 +171,26 @@ export async function getSessionInfo() {
       // clientId is not a secret; showing it lets the tester confirm WHICH
       // tenant they are connected as, without exposing the secret.
       tenantId: byo.clientId,
-      ephemeral: false,
       expiresAt: null,
       baseUrl: config.baseUrl,
       mode: "byo" as const,
     };
   }
-  const creds = await getCredentials();
+  if (hasStaticCredentials()) {
+    return {
+      tenantId: config.clientId,
+      expiresAt: null,
+      baseUrl: config.baseUrl,
+      mode: "static" as const,
+    };
+  }
+  // No credentials anywhere: the UI gates the journey behind the connect
+  // screen. This function MUST NOT throw pre-connect — GET /api/session uses it
+  // to render the gate itself.
   return {
-    tenantId: creds.tenantId ?? null,
-    ephemeral: creds.ephemeral,
-    expiresAt: creds.expiresAt ?? null,
+    tenantId: null,
+    expiresAt: null,
     baseUrl: config.baseUrl,
-    mode: config.mode,
+    mode: "disconnected" as const,
   };
-}
-
-/** Force a re-provision + re-token (DEMO path only; used if a sandbox expires). */
-export function resetSession() {
-  credsPromise = null;
-  cachedToken = null;
 }
