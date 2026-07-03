@@ -30,7 +30,7 @@ Before reading the code, fetch the single self-contained guide to the API. It is
 - **Index / link map:** https://knowyourcustomer.com/developers/llms.md
 - OpenAPI 3.0 JSON and a Postman collection are linked from https://knowyourcustomer.com/developers/api-reference/
 
-Everything about the API contract (auth, the case model, readiness semantics, beneficial ownership, documents, AML, IDV, the error model, per-jurisdiction latency) is in `llms-full.txt`. Prefer it over guessing from code.
+Everything about the API contract (auth, the case model, readiness semantics, beneficial ownership, documents, AML, IDV, the error model, per-jurisdiction latency) is in `llms-full.md` (link above). Prefer it over guessing from code.
 
 ## Run it
 
