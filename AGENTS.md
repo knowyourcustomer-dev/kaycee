@@ -16,7 +16,7 @@ Before reading the code, fetch the single self-contained guide to the API. It is
 - **Index / link map:** https://knowyourcustomer.com/developers/llms.md
 - OpenAPI 3.0 JSON and a Postman collection are linked from https://knowyourcustomer.com/developers/api-reference/
 
-Everything about the API contract (auth, the case model, readiness semantics, beneficial ownership, documents, AML, IDV, the error model, per-jurisdiction latency) is in `llms-full.txt`. Prefer it over guessing from code.
+Everything about the API contract (auth, the case model, readiness semantics, beneficial ownership, documents, AML, IDV, the error model, per-jurisdiction latency) is in `llms-full.md`. Prefer it over guessing from code.
 
 ## Run it (no credentials needed)
 
@@ -31,7 +31,7 @@ Tests: `npm test`. Build: `npm run build`.
 
 ## The API model in one paragraph
 
-OAuth2 client-credentials (bearer, scope `PublicApi`, ~10 min TTL) against `{baseUrl}/connect/token`. Work is organized as a **case**: search a company, create a case, then poll. The important seam: a case's status **text stays "Open"** while its numeric `statusId` climbs through processing states, so **readiness = the structure being populated** (members / org-chart nodes present), not the status field. Beneficial ownership comes as a flat member list (`GET .../members`, under `controllingEntitiesAndIndividuals`) and a recursive `GET .../org-chart`. Full detail: `llms-full.txt`.
+OAuth2 client-credentials (bearer, scope `PublicApi`, ~10 min TTL) against `{baseUrl}/connect/token`. Work is organized as a **case**: search a company, create a case, then poll. The important seam: a case's status **text stays "Open"** while its numeric `statusId` climbs through processing states, so **readiness = the structure being populated** (members / org-chart nodes present), not the status field. Beneficial ownership comes as a flat member list (`GET .../members`, under `controllingEntitiesAndIndividuals`) and a recursive `GET .../org-chart`. Full detail: `llms-full.md`.
 
 ## Where things are
 
@@ -49,4 +49,4 @@ OAuth2 client-credentials (bearer, scope `PublicApi`, ~10 min TTL) against `{bas
 
 ## Getting real access (human step, by design)
 
-Production and a dedicated sandbox tenant are **approval-gated on purpose**: a person requests access and signs a short Sandbox Testing Agreement at https://knowyourcustomer.com/developers/access/, then credentials are emailed. One issued credential unlocks the API, the Workspace review console, and this app against the same tenant. You can build and test the entire flow against the auto-provisioned demo tenant first, then drop in the issued credentials. What the approval email delivers is described in `llms-full.txt` (no credentials are ever committed to this repo).
+Production and a dedicated sandbox tenant are **approval-gated on purpose**: a person requests access and signs a short Sandbox Testing Agreement at https://knowyourcustomer.com/developers/access/, then credentials are emailed. One issued credential unlocks the API, the Workspace review console, and this app against the same tenant. You can build and test the entire flow against the auto-provisioned demo tenant first, then drop in the issued credentials. What the approval email delivers is described in `llms-full.md` (no credentials are ever committed to this repo).
