@@ -100,3 +100,78 @@ test("config: STATIC mode only when BOTH creds present", () => {
   assert.equal(mode("id", null), "sandbox");
   assert.equal(mode("id", "sec"), "static");
 });
+
+// --- upstream-failure envelope (imports the REAL module: src/lib/report-failure.mjs) ---
+// The route must never echo an upstream body into the JSON envelope. On
+// 2026-08-18 a tester's report download hit a gateway timeout and got the
+// gateway's HTML page wrapped in {"error":"KYC API error","detail":"<html>..."}.
+import {
+  NOT_READY_MESSAGE,
+  RETRY_MESSAGE,
+  describeReportFailure,
+  looksLikeHtml,
+  relayableMessage,
+} from "../src/lib/report-failure.mjs";
+
+const GATEWAY_HTML =
+  '<!DOCTYPE html><html><head><title>504 OriginTimeout</title></head><body>Our services aren\'t available right now</body></html>';
+
+test("report failure: an HTML upstream body is never echoed (5xx)", () => {
+  for (const status of [500, 502, 503, 504]) {
+    const out = describeReportFailure(status, GATEWAY_HTML);
+    assert.equal(out.status, status);
+    assert.equal(out.detail, RETRY_MESSAGE);
+    assert.equal(out.detail.includes("<"), false);
+    assert.equal(out.detail.includes("OriginTimeout"), false);
+  }
+});
+
+test("report failure: an HTML upstream body is never echoed (4xx either)", () => {
+  const out = describeReportFailure(403, "<html><body>Access blocked by your proxy</body></html>");
+  assert.equal(out.status, 403);
+  assert.equal(out.detail.includes("<"), false);
+  assert.match(out.detail, /HTTP 403/);
+});
+
+test("report failure: 409 keeps the not-ready message", () => {
+  const out = describeReportFailure(409, '{"statusCode":409,"message":"The case report is not ready yet"}');
+  assert.equal(out.detail, NOT_READY_MESSAGE);
+  assert.match(out.detail, /not ready yet/);
+});
+
+test("report failure: a 5xx JSON envelope still gets the friendly retry text, not the body", () => {
+  const body = '{"statusCode":503,"message":"The document could not be retrieved right now; please retry.","apiErrors":null}';
+  const out = describeReportFailure(503, body);
+  assert.equal(out.detail, RETRY_MESSAGE);
+  assert.equal(out.detail.includes("statusCode"), false);
+});
+
+test("report failure: a plain-text JSON message is relayed for 4xx, markup is not", () => {
+  assert.equal(describeReportFailure(400, '{"statusCode":400,"message":"Invalid CaseCommonId"}').detail, "Invalid CaseCommonId");
+  assert.match(describeReportFailure(404, "not json at all").detail, /HTTP 404/);
+  assert.match(describeReportFailure(400, '{"message":"<script>alert(1)</script>"}').detail, /HTTP 400/);
+  assert.match(describeReportFailure(400, '{"message":"   "}').detail, /HTTP 400/);
+  assert.match(describeReportFailure(400, '{"message":42}').detail, /HTTP 400/);
+  const long = JSON.stringify({ message: "x".repeat(1000) });
+  assert.ok(describeReportFailure(400, long).detail.length <= 302);
+});
+
+test("report failure helpers: looksLikeHtml + relayableMessage", () => {
+  assert.equal(looksLikeHtml(GATEWAY_HTML), true);
+  assert.equal(looksLikeHtml("  \n<html>"), true);
+  assert.equal(looksLikeHtml('{"message":"x"}'), false);
+  assert.equal(looksLikeHtml(""), false);
+  assert.equal(looksLikeHtml(null), false);
+  assert.equal(relayableMessage(GATEWAY_HTML), null);
+  assert.equal(relayableMessage('{"message":"ok"}'), "ok");
+  assert.equal(relayableMessage("[]"), null);
+});
+
+test("report route: uses the failure helper and the PDF magic check, never err.body", () => {
+  const route = loadModuleSource("src/app/api/cases/[id]/report/route.ts");
+  assert.match(route, /describeReportFailure\(err\.status, err\.body\)/);
+  assert.match(route, /looksLikePdf\(bytes\)/);
+  assert.match(route, /RETRY_MESSAGE/);
+  // The pre-fix line that echoed the upstream body into the envelope is gone.
+  assert.doesNotMatch(route, /:\s*err\.body\b/);
+});
