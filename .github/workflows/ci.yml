@@ -1,0 +1,52 @@
+name: CI
+
+# Standing pre-merge gate for the sample app: install, production build, unit
+# tests. Runs on every pull request (no `branches:` filter, so a PR whose base
+# is another branch is gated too) and on every push to main.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Cancel superseded runs of THIS workflow on the same ref so a force-push does
+# not pile up runners (keyed on the workflow name too, so a second workflow on
+# the same ref can never cancel this one).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node 22 (current LTS): the test suite imports the TypeScript sources
+      # directly and relies on Node's native type stripping, which is on by
+      # default from 22.18 (this job's first runs on Node 20 failed with
+      # ERR_UNKNOWN_FILE_EXTENSION ".ts"). The Dockerfile builds and runs the
+      # app on node:20-alpine, which Next.js supports; only the tests need 22+.
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install (clean, from the lockfile)
+        run: npm ci
+
+      - name: Production build
+        run: npm run build
+
+      # `npm test` is `node --test` with no arguments: the runner discovers
+      # `**/*.test.mjs` itself (node_modules excluded), on every Node major and
+      # on Windows shells (a quoted glob argument is only expanded by Node 21+).
+      - name: Unit tests
+        run: npm test
