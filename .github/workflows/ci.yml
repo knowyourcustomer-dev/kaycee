@@ -28,12 +28,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Node 20 = the major the Dockerfile builds and runs on (node:20-alpine),
-      # so the gate compiles the same thing the image does.
-      - name: Set up Node 20
+      # Node 22 (current LTS): the test suite imports the TypeScript sources
+      # directly and relies on Node's native type stripping, which is on by
+      # default from 22.18 (this job's first runs on Node 20 failed with
+      # ERR_UNKNOWN_FILE_EXTENSION ".ts"). The Dockerfile builds and runs the
+      # app on node:20-alpine, which Next.js supports; only the tests need 22+.
+      - name: Set up Node 22
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
 
       - name: Install (clean, from the lockfile)
@@ -42,9 +45,8 @@ jobs:
       - name: Production build
         run: npm run build
 
-      # `node --test` with no arguments: the runner discovers `**/*.test.mjs`
-      # itself (node_modules excluded). A quoted glob argument is NOT expanded
-      # by Node 20 (glob arguments arrived in Node 21), which is exactly what
-      # this job's first run caught: "Could not find 'tests/**/*.test.mjs'".
+      # `npm test` is `node --test` with no arguments: the runner discovers
+      # `**/*.test.mjs` itself (node_modules excluded), on every Node major and
+      # on Windows shells (a quoted glob argument is only expanded by Node 21+).
       - name: Unit tests
         run: npm test

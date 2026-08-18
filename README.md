@@ -20,7 +20,9 @@ company verification, webhooks, developer sandbox.
 
 ## Quickstart
 
-Requires Node.js 20 or later.
+Requires Node.js 20 or later to run the app; running the test suite (`npm test`)
+needs Node.js 22.18 or later, because the tests import the TypeScript sources
+directly through Node's native type stripping.
 
 1. Request free sandbox access at
    <https://knowyourcustomer.com/developers/access/>. You will be emailed a
