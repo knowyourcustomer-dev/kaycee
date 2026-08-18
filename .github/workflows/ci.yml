@@ -12,9 +12,11 @@ on:
 permissions:
   contents: read
 
-# Cancel superseded runs on the same ref so a force-push does not pile up runners.
+# Cancel superseded runs of THIS workflow on the same ref so a force-push does
+# not pile up runners (keyed on the workflow name too, so a second workflow on
+# the same ref can never cancel this one).
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -40,5 +42,9 @@ jobs:
       - name: Production build
         run: npm run build
 
+      # `node --test` with no arguments: the runner discovers `**/*.test.mjs`
+      # itself (node_modules excluded). A quoted glob argument is NOT expanded
+      # by Node 20 (glob arguments arrived in Node 21), which is exactly what
+      # this job's first run caught: "Could not find 'tests/**/*.test.mjs'".
       - name: Unit tests
         run: npm test
