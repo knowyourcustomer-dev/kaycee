@@ -1,0 +1,44 @@
+name: CI
+
+# Standing pre-merge gate for the sample app: install, production build, unit
+# tests. Runs on every pull request (no `branches:` filter, so a PR whose base
+# is another branch is gated too) and on every push to main.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same ref so a force-push does not pile up runners.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node 20 = the major the Dockerfile builds and runs on (node:20-alpine),
+      # so the gate compiles the same thing the image does.
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install (clean, from the lockfile)
+        run: npm ci
+
+      - name: Production build
+        run: npm run build
+
+      - name: Unit tests
+        run: npm test
