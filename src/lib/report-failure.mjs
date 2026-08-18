@@ -47,7 +47,8 @@ export function relayableMessage(body) {
   if (typeof message !== "string") return null;
   const trimmed = message.trim();
   if (!trimmed || /[<>]/.test(trimmed)) return null;
-  return trimmed.length > MAX_RELAYED_MESSAGE ? `${trimmed.slice(0, MAX_RELAYED_MESSAGE)}…` : trimmed;
+  // Final length never exceeds MAX_RELAYED_MESSAGE, ellipsis included.
+  return trimmed.length > MAX_RELAYED_MESSAGE ? `${trimmed.slice(0, MAX_RELAYED_MESSAGE - 1)}…` : trimmed;
 }
 
 /**

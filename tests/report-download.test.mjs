@@ -106,6 +106,7 @@ test("config: STATIC mode only when BOTH creds present", () => {
 // 2026-08-18 a tester's report download hit a gateway timeout and got the
 // gateway's HTML page wrapped in {"error":"KYC API error","detail":"<html>..."}.
 import {
+  MAX_RELAYED_MESSAGE,
   NOT_READY_MESSAGE,
   RETRY_MESSAGE,
   describeReportFailure,
@@ -153,7 +154,11 @@ test("report failure: a plain-text JSON message is relayed for 4xx, markup is no
   assert.match(describeReportFailure(400, '{"message":"   "}').detail, /HTTP 400/);
   assert.match(describeReportFailure(400, '{"message":42}').detail, /HTTP 400/);
   const long = JSON.stringify({ message: "x".repeat(1000) });
-  assert.ok(describeReportFailure(400, long).detail.length <= 302);
+  const relayed = describeReportFailure(400, long).detail;
+  assert.equal(relayed.length, MAX_RELAYED_MESSAGE, "final length is capped, ellipsis included");
+  assert.ok(relayed.endsWith("…"));
+  const exact = JSON.stringify({ message: "y".repeat(MAX_RELAYED_MESSAGE) });
+  assert.equal(describeReportFailure(400, exact).detail.length, MAX_RELAYED_MESSAGE);
 });
 
 test("report failure helpers: looksLikeHtml + relayableMessage", () => {
