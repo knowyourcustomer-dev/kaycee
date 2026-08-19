@@ -160,6 +160,10 @@ test("the content-type named in the message is sanitised, never echoed raw", () 
   assert.equal(describeContentType("<script>alert(1)</script>"), "an unexpected content-type");
   assert.equal(describeContentType("text/" + "x".repeat(80)), "an unexpected content-type");
   assert.equal(describeContentType("not a media type"), "an unexpected content-type");
+  // Syntactically valid HTTP token characters OUTSIDE the conservative subset are not echoed either.
+  assert.equal(describeContentType("application/x~y"), "an unexpected content-type");
+  assert.equal(describeContentType("text/a'b"), "an unexpected content-type");
+  assert.equal(describeContentType("application/vnd.example.v1+json"), "application/vnd.example.v1+json");
 });
 
 // ---------------------------------------------------------------------------
@@ -246,6 +250,9 @@ test("a body-read failure after headers arrived is also a network failure", asyn
     );
   const e = await failure("/api/cases");
   assert.equal(e.kind, "network");
+  assert.equal(e.status, 200, "the status that did arrive is kept");
+  assertHumanMessage(e.message);
+  assert.match(e.message, /the reply to GET \/api\/cases \(HTTP 200\) was cut off before it could be read/);
 });
 
 test("a caller's own AbortError is re-thrown untouched, not relabelled as a network failure", async () => {

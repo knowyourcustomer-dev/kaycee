@@ -67,7 +67,9 @@ export function looksLikeMarkup(text: string): boolean {
 /**
  * The media type of a content-type header, reduced to something safe to put in
  * a message (the header may have been written by whatever rewrote the
- * response). Anything outside the token alphabet, or over 60 chars, is
+ * response). Only a conservative subset of the HTTP token alphabet is echoed
+ * (letters, digits and `! # $ & ^ _ . + -`, one slash, at most 60 chars);
+ * a media type outside that subset, even a syntactically valid one, is
  * described generically rather than echoed.
  */
 export function describeContentType(contentType: string | null | undefined): string {
@@ -90,7 +92,7 @@ export interface BffFailureInput {
   kind: BffFailureKind;
   method: string;
   path: string;
-  /** 0 when no response arrived. */
+  /** 0 when no response arrived; for kind "network" a non-zero status means headers arrived but the body could not be read. */
   status: number;
   /** Raw content-type header of the response, if any. */
   contentType?: string | null;
@@ -109,12 +111,17 @@ export function describeBffFailure(input: BffFailureInput): string {
   const host = input.host ?? pageHost();
   const hostPhrase = host ? host : "this host";
   switch (input.kind) {
-    case "network":
+    case "network": {
+      const what =
+        input.status > 0
+          ? `the reply to ${where} (HTTP ${input.status}) was cut off before it could be read`
+          : `the request to ${where} got no response`;
       return (
-        `Could not reach the app server: the request to ${where} got no response. ` +
+        `Could not reach the app server: ${what}. ` +
         `Your connection may be down, or a corporate proxy or firewall may be blocking ${hostPhrase}. ` +
         `Check your network, then retry.`
       );
+    }
     case "not_json": {
       const ct = describeContentType(input.contentType);
       const shape = isJsonContentType(input.contentType)
@@ -143,17 +150,31 @@ export function bodyIsParseable(contentType: string | null | undefined, text: st
 export async function bff<T>(path: string, init?: RequestInit): Promise<T> {
   const method = (init?.method || "GET").toUpperCase();
   let res: Response;
-  let text: string;
   try {
     res = await fetch(path, {
       ...init,
       headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
     });
-    text = await res.text();
   } catch (e) {
     // A caller's own AbortController is not a network failure; let it through untouched.
     if (e instanceof Error && e.name === "AbortError") throw e;
+    // No response at all.
     throw new BffError(describeBffFailure({ kind: "network", method, path, status: 0 }), "network", 0, method, path);
+  }
+  let text: string;
+  try {
+    text = await res.text();
+  } catch (e) {
+    if (e instanceof Error && e.name === "AbortError") throw e;
+    // Headers arrived, the body did not: still a network failure, but the
+    // status is known and is kept for the diagnosis.
+    throw new BffError(
+      describeBffFailure({ kind: "network", method, path, status: res.status }),
+      "network",
+      res.status,
+      method,
+      path,
+    );
   }
   const contentType = res.headers.get("content-type");
 
