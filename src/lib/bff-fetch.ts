@@ -124,8 +124,10 @@ export function describeBffFailure(input: BffFailureInput): string {
     }
     case "not_json": {
       const ct = describeContentType(input.contentType);
-      const shape = isJsonContentType(input.contentType)
-        ? `the reply was labelled ${ct} but is not JSON`
+      const claimedJson = isJsonContentType(input.contentType);
+      const shape = claimedJson
+        ? // The header claimed JSON; name it only when it is safe to echo.
+          `the reply was labelled ${ct === "an unexpected content-type" ? "as JSON" : ct} but is not JSON`
         : `the reply was ${ct}, not JSON`;
       return (
         `The response was blocked or rewritten before it reached the app, usually by a corporate proxy ` +

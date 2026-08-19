@@ -143,6 +143,14 @@ test("no content-type at all with a non-JSON body: reported, not parsed", async 
   assertNoMarkupParsed();
 });
 
+test("a JSON-claiming content-type outside the echo subset is described as 'labelled as JSON', not with the generic label", () => {
+  const msg = describeBffFailure({ kind: "not_json", method: "GET", path: "/api/x", status: 200, contentType: "application/x~y+json", host: "" });
+  assert.match(msg, /the reply was labelled as JSON but is not JSON/);
+  assert.equal(msg.includes("x~y"), false);
+  assert.equal(msg.includes("an unexpected content-type"), false);
+  assertHumanMessage(msg);
+});
+
 test("declared JSON that does not parse (rewritten / truncated in transit) is a not_json failure, body not shown", async () => {
   stubResponse('{"connected": tru', { status: 200, contentType: "application/json" });
   const e = await failure("/api/session/credentials", { method: "POST" });
