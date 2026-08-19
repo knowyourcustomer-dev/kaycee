@@ -125,9 +125,13 @@ export default function Journey() {
         return s;
       })
       .catch((e) => {
-        // A 401 means the BYO cookie's credentials expired/were rejected —
-        // treat it as disconnected so the connect gate shows with the message.
-        if (e instanceof BffError && e.status === 401) {
+        // A 401 from OUR BFF (a JSON envelope) means the BYO cookie's
+        // credentials expired/were rejected: treat it as disconnected so the
+        // connect gate shows with the message. A 401 whose body is not JSON
+        // (a proxy or content filter answering in the BFF's place) is not a
+        // verdict on the credentials, so it stays a plain error while the
+        // session is unknown (AIT-225).
+        if (e instanceof BffError && e.kind === "bff_error" && e.status === 401) {
           setSession({ tenantId: null, expiresAt: null, baseUrl: "", mode: "disconnected" });
           setError(e.message);
           return undefined;
