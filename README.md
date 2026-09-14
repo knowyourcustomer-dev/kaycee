@@ -20,8 +20,9 @@ company verification, webhooks, developer sandbox.
 
 ## Quickstart
 
-Requires Node.js 20 or later to run the app; running the test suite (`npm test`)
-needs Node.js 22.18 or later, because the tests import the TypeScript sources
+Requires Node.js 20.9 or later to run the app (the image dependency `sharp`
+declares `engines.node >=20.9.0`); running the test suite (`npm test`) needs
+Node.js 22.18 or later, because the tests import the TypeScript sources
 directly through Node's native type stripping.
 
 1. Request free sandbox access at

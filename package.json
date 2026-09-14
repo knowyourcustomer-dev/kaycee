@@ -4,6 +4,9 @@
   "private": true,
   "description": "Kaycee: an SME business onboarding sample app for the Know Your Customer KYB and UBO API. Clone, run against the free sandbox, fork.",
   "license": "MIT",
+  "engines": {
+    "node": ">=20.9.0"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
